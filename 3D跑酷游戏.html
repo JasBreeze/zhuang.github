@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>简易 3D 跑酷</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background-color: #87ceeb;
+        font-family: Arial, sans-serif;
+      }
+      #score-board {
+        position: absolute;
+        top: 20px;
+        left: 20px;
+        color: white;
+        font-size: 24px;
+        font-weight: bold;
+        text-shadow: 2px 2px 4px #000;
+        pointer-events: none;
+        z-index: 10;
+      }
+      #game-over {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: white;
+        font-size: 40px;
+        font-weight: bold;
+        display: none;
+        text-align: center;
+        text-shadow: 2px 2px 4px #000;
+        z-index: 10;
+      }
+      button {
+        padding: 10px 20px;
+        font-size: 20px;
+        cursor: pointer;
+        background: #ff4757;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        margin-top: 20px;
+      }
+      #instructions {
+        position: absolute;
+        bottom: 20px;
+        width: 100%;
+        text-align: center;
+        color: white;
+        font-size: 18px;
+        text-shadow: 1px 1px 2px #000;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="score-board">分数: 0</div>
+    <div id="game-over">
+      <div>游戏结束!</div>
+      <button onclick="resetGame()">重玩</button>
+    </div>
+    <div id="instructions">空格键：跳跃 | A/D 或 ←/→：左右移动</div>
+
+    <!-- 引入 Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+      // --- 1. 初始化场景 ---
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87ceeb); // 天空蓝
+      scene.fog = new THREE.Fog(0x87ceeb, 10, 50); // 迷雾效果
+
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+      document.body.appendChild(renderer.domElement);
+
+      // --- 2. 灯光 ---
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambientLight);
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(10, 20, 10);
+      dirLight.castShadow = true;
+      dirLight.shadow.camera.top = 20;
+      dirLight.shadow.camera.bottom = -20;
+      dirLight.shadow.camera.left = -20;
+      dirLight.shadow.camera.right = 20;
+      scene.add(dirLight);
+
+      // --- 3. 游戏变量 ---
+      let player, ground;
+      let obstacles = [];
+      let gameActive = true;
+      let score = 0;
+      let speed = 0.2;
+      let frameCount = 0;
+
+      // 玩家控制变量
+      let isJumping = false;
+      let verticalVelocity = 0;
+      const gravity = 0.02;
+      const jumpStrength = 0.4;
+      const laneWidth = 3; // 跑道宽度
+      let currentLane = 0; // -1: 左, 0: 中, 1: 右
+      let targetX = 0;
+
+      // --- 4. 创建对象函数 ---
+      function createPlayer() {
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const material = new THREE.MeshPhongMaterial({ color: 0xff4757 }); // 红色玩家
+        const cube = new THREE.Mesh(geometry, material);
+        cube.castShadow = true;
+        cube.position.y = 0.5;
+        scene.add(cube);
+        return cube;
+      }
+
+      function createGround() {
+        const geometry = new THREE.PlaneGeometry(100, 1000);
+        const material = new THREE.MeshPhongMaterial({
+          color: 0x2ed573,
+          depthWrite: false,
+        });
+        const floor = new THREE.Mesh(geometry, material);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // 添加跑道线
+        const gridHelper = new THREE.GridHelper(100, 30, 0xffffff, 0xffffff);
+        gridHelper.position.y = 0.01;
+        gridHelper.scale.z = 10;
+        scene.add(gridHelper);
+
+        return floor;
+      }
+
+      function createObstacle(zPos) {
+        // 随机选择车道
+        const lane = Math.floor(Math.random() * 3) - 1; // -1, 0, 1
+        const xPos = lane * laneWidth;
+
+        const geometry = new THREE.BoxGeometry(1.5, 1.5, 1.5);
+        const material = new THREE.MeshPhongMaterial({ color: 0x2f3542 }); // 深色障碍物
+        const obs = new THREE.Mesh(geometry, material);
+        obs.position.set(xPos, 0.75, zPos);
+        obs.castShadow = true;
+        obs.receiveShadow = true;
+        scene.add(obs);
+        obstacles.push(obs);
+      }
+
+      // --- 5. 初始化游戏 ---
+      function init() {
+        player = createPlayer();
+        ground = createGround();
+        camera.position.set(0, 5, 8);
+        camera.lookAt(0, 0, 0);
+
+        // 初始障碍物
+        for (let i = 0; i < 5; i++) {
+          createObstacle(-20 - i * 15);
+        }
+      }
+
+      // --- 6. 控制逻辑 ---
+      window.addEventListener("keydown", (e) => {
+        if (!gameActive) return;
+
+        switch (e.code) {
+          case "Space":
+            if (!isJumping && player.position.y <= 0.51) {
+              verticalVelocity = jumpStrength;
+              isJumping = true;
+            }
+            break;
+          case "KeyA":
+          case "ArrowLeft":
+            if (currentLane > -1) {
+              currentLane--;
+              targetX = currentLane * laneWidth;
+            }
+            break;
+          case "KeyD":
+          case "ArrowRight":
+            if (currentLane < 1) {
+              currentLane++;
+              targetX = currentLane * laneWidth;
+            }
+            break;
+        }
+      });
+
+      // --- 7. 游戏循环 ---
+      function animate() {
+        requestAnimationFrame(animate);
+
+        if (!gameActive) return;
+
+        // 玩家移动 (平滑左右移动)
+        player.position.x += (targetX - player.position.x) * 0.2;
+
+        // 跳跃物理
+        player.position.y += verticalVelocity;
+        verticalVelocity -= gravity;
+
+        // 地面碰撞检测
+        if (player.position.y <= 0.5) {
+          player.position.y = 0.5;
+          isJumping = false;
+          verticalVelocity = 0;
+        }
+
+        // 旋转玩家增加动感
+        player.rotation.x -= 0.05;
+
+        // 障碍物逻辑
+        frameCount++;
+        speed += 0.0001; // 随时间加速
+
+        // 移动障碍物向玩家而来
+        for (let i = obstacles.length - 1; i >= 0; i--) {
+          let obs = obstacles[i];
+          obs.position.z += speed;
+
+          // 碰撞检测 (AABB 简单盒体碰撞)
+          // 玩家位置是固定的 (0,0,0) 附近，障碍物在动
+          // 计算距离来判断
+          const dx = Math.abs(player.position.x - obs.position.x);
+          const dy = Math.abs(player.position.y - obs.position.y);
+          const dz = Math.abs(player.position.z - obs.position.z);
+
+          if (dx < 1.0 && dy < 1.0 && dz < 1.0) {
+            gameOver();
+          }
+
+          // 移除超出屏幕的障碍物并计分
+          if (obs.position.z > 10) {
+            scene.remove(obs);
+            obstacles.splice(i, 1);
+            score++;
+            document.getElementById("score-board").innerText = `分数: ${score}`;
+
+            // 生成新障碍物 (在远处)
+            createObstacle(-40 - Math.random() * 10);
+          }
+        }
+
+        // 补充障碍物（确保远处总有障碍物）
+        if (obstacles.length < 5) {
+          createObstacle(-50);
+        }
+
+        renderer.render(scene, camera);
+      }
+
+      function gameOver() {
+        gameActive = false;
+        document.getElementById("game-over").style.display = "block";
+      }
+
+      // 全局函数供按钮调用
+      window.resetGame = function () {
+        // 清理场景中的障碍物
+        obstacles.forEach((obs) => scene.remove(obs));
+        obstacles = [];
+
+        // 重置变量
+        score = 0;
+        speed = 0.2;
+        currentLane = 0;
+        targetX = 0;
+        player.position.set(0, 0.5, 0);
+        gameActive = true;
+
+        document.getElementById("score-board").innerText = "分数: 0";
+        document.getElementById("game-over").style.display = "none";
+
+        // 重新生成初始障碍
+        for (let i = 0; i < 5; i++) {
+          createObstacle(-20 - i * 15);
+        }
+      };
+
+      // 窗口大小调整
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+
+      init();
+      animate();
+    </script>
+  </body>
+</html>
